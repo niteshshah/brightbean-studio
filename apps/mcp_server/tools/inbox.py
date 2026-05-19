@@ -7,7 +7,7 @@ from typing import Any
 from django.db.models import Q
 
 from apps.inbox import services as inbox_services
-from apps.inbox.models import InboxMessage
+from apps.inbox.models import InboxMessage, InboxSLAConfig, SavedReply
 from apps.members.models import WorkspaceMembership
 
 
@@ -164,3 +164,109 @@ def register(mcp, ctx):
             assignee = membership.user
         inbox_services.assign_message(message=msg, assignee=assignee, actor=ctx.user)
         return _serialize_message(msg)
+
+    @mcp.tool()
+    def bulk_inbox_action(
+        message_ids: list[str],
+        action: str,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Bulk update inbox messages.
+
+        action: mark_read | resolve | archive | assign
+        For action='assign', pass user_id (or null to unassign).
+        """
+        ctx.require_permission("reply_from_inbox")
+        ws = ctx.require_workspace()
+        assignee = None
+        if action == "assign" and user_id:
+            membership = WorkspaceMembership.objects.filter(workspace=ws, user_id=user_id).first()
+            if membership is None:
+                raise ValueError(f"User {user_id} is not a workspace member.")
+            assignee = membership.user
+        count = inbox_services.bulk_action(workspace=ws, message_ids=message_ids, action=action, assignee=assignee)
+        return {"action": action, "updated": count}
+
+    @mcp.tool()
+    def list_saved_replies() -> list[dict[str, Any]]:
+        """List saved-reply templates in the current workspace."""
+        ctx.require_permission("use_inbox")
+        ws = ctx.require_workspace()
+        return [{"id": str(r.id), "title": r.title, "body": r.body} for r in SavedReply.objects.for_workspace(ws.id)]
+
+    @mcp.tool()
+    def create_saved_reply(title: str, body: str) -> dict[str, Any]:
+        ctx.require_permission("reply_from_inbox")
+        ws = ctx.require_workspace()
+        r = SavedReply.objects.create(workspace=ws, title=title, body=body, created_by=ctx.user)
+        return {"id": str(r.id), "title": r.title, "body": r.body}
+
+    @mcp.tool()
+    def delete_saved_reply(saved_reply_id: str) -> dict[str, Any]:
+        ctx.require_permission("reply_from_inbox")
+        ws = ctx.require_workspace()
+        r = SavedReply.objects.for_workspace(ws.id).filter(pk=saved_reply_id).first()
+        if r is None:
+            raise ValueError(f"SavedReply {saved_reply_id} not found.")
+        r.delete()
+        return {"deleted": True, "id": saved_reply_id}
+
+    @mcp.tool()
+    def render_saved_reply(saved_reply_id: str, message_id: str) -> dict[str, Any]:
+        """Render a saved reply against a message's context (sender_name, account_name, post_url)."""
+        ctx.require_permission("use_inbox")
+        ws = ctx.require_workspace()
+        r = SavedReply.objects.for_workspace(ws.id).filter(pk=saved_reply_id).first()
+        if r is None:
+            raise ValueError(f"SavedReply {saved_reply_id} not found.")
+        msg = _get_message(ctx, message_id)
+        body = r.render(
+            {
+                "sender_name": msg.sender_name,
+                "account_name": msg.social_account.account_name if msg.social_account_id else "",
+                "post_url": "",
+            }
+        )
+        return {"body": body, "saved_reply_id": str(r.id)}
+
+    @mcp.tool()
+    def get_inbox_sla() -> dict[str, Any]:
+        """Return the SLA config (target response minutes, auto-resolve-on-reply) for this workspace."""
+        ctx.require_permission("use_inbox")
+        ws = ctx.require_workspace()
+        cfg = InboxSLAConfig.objects.filter(workspace=ws).first()
+        if cfg is None:
+            return {"is_active": False, "target_response_minutes": 0, "auto_resolve_on_reply": False}
+        return {
+            "is_active": cfg.is_active,
+            "target_response_minutes": cfg.target_response_minutes,
+            "auto_resolve_on_reply": cfg.auto_resolve_on_reply,
+        }
+
+    @mcp.tool()
+    def update_inbox_sla(
+        target_response_minutes: int | None = None,
+        is_active: bool | None = None,
+        auto_resolve_on_reply: bool | None = None,
+    ) -> dict[str, Any]:
+        """Update SLA config (per-workspace singleton)."""
+        ctx.require_permission("manage_workspace_settings")
+        ws = ctx.require_workspace()
+        cfg, _ = InboxSLAConfig.objects.get_or_create(workspace=ws)
+        fields = []
+        if target_response_minutes is not None:
+            cfg.target_response_minutes = target_response_minutes
+            fields.append("target_response_minutes")
+        if is_active is not None:
+            cfg.is_active = is_active
+            fields.append("is_active")
+        if auto_resolve_on_reply is not None:
+            cfg.auto_resolve_on_reply = auto_resolve_on_reply
+            fields.append("auto_resolve_on_reply")
+        if fields:
+            cfg.save(update_fields=fields)
+        return {
+            "is_active": cfg.is_active,
+            "target_response_minutes": cfg.target_response_minutes,
+            "auto_resolve_on_reply": cfg.auto_resolve_on_reply,
+        }

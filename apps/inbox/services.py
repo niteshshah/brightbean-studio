@@ -91,3 +91,20 @@ def change_status(*, message: InboxMessage, status: str) -> InboxMessage:
     message.status = status
     message.save(update_fields=["status"])
     return message
+
+
+_BULK_ACTIONS = {
+    "mark_read": InboxMessage.Status.OPEN,  # unread→open
+    "resolve": InboxMessage.Status.RESOLVED,
+    "archive": InboxMessage.Status.ARCHIVED,
+}
+
+
+def bulk_action(*, workspace, message_ids: list, action: str, assignee=None) -> int:
+    """Apply a bulk action to inbox messages. Returns count updated."""
+    qs = InboxMessage.objects.filter(workspace_id=workspace.id, id__in=message_ids)
+    if action in _BULK_ACTIONS:
+        return qs.update(status=_BULK_ACTIONS[action])
+    if action == "assign":
+        return qs.update(assigned_to=assignee)
+    raise ValueError(f"Unknown bulk action: {action}")
