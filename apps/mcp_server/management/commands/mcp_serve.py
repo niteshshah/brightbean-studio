@@ -34,10 +34,6 @@ class Command(BaseCommand):
         except ImportError as exc:
             raise CommandError(f"Failed to import MCP server: {exc}") from exc
 
-        if options["http"]:
-            raise CommandError("HTTP transport is not implemented yet (Phase 2). Use --stdio for now.")
-
-        # Default to stdio.
         raw_token = os.environ.get(options["token_env"], "").strip()
         if not raw_token:
             raise CommandError(f"${options['token_env']} is not set. Mint a token at /accounts/api-tokens/.")
@@ -64,8 +60,13 @@ class Command(BaseCommand):
                 f"Underlying error: {exc}"
             ) from exc
 
-        # FastMCP.run() handles the stdio loop and blocks until EOF.
         try:
-            server.run()
+            if options["http"]:
+                server.settings.host = options["host"]
+                server.settings.port = options["port"]
+                self.stderr.write(f"  serving streamable-http on http://{options['host']}:{options['port']}/mcp")
+                server.run(transport="streamable-http")
+            else:
+                server.run()
         except KeyboardInterrupt:
             sys.exit(0)
