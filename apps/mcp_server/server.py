@@ -102,8 +102,10 @@ def build_server(ctx: AuthContext):
     _ = (MCPAuthError, MCPWorkspaceError)  # keep imported for downstream tool modules
 
     from .tools import (
+        analytics,
         approvals,
         calendar_tools,
+        client_portal,
         composer,
         content_meta,
         ideas,
@@ -128,5 +130,7 @@ def build_server(ctx: AuthContext):
     calendar_tools.register(mcp, ctx)
     members.register(mcp, ctx)
     notifications.register(mcp, ctx)
+    client_portal.register(mcp, ctx)
+    analytics.register(mcp, ctx)
 
     return mcp
