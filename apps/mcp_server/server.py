@@ -31,9 +31,23 @@ def build_server(ctx: AuthContext):
 
     `ctx` is bound to the lifetime of the server (one stdio session = one user).
     """
-    from mcp.server.fastmcp import FastMCP
+    import os
 
-    mcp = FastMCP("brightbean")
+    from mcp.server.fastmcp import FastMCP
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    allowed_hosts_env = os.environ.get("MCP_ALLOWED_HOSTS", "").strip()
+    if allowed_hosts_env:
+        # Explicit allowlist (recommended for hardened deployments).
+        transport_security = TransportSecuritySettings(
+            allowed_hosts=[h.strip() for h in allowed_hosts_env.split(",") if h.strip()],
+        )
+    else:
+        # No allowlist → disable DNS-rebinding protection. Safe when running
+        # behind a proxy that validates Host itself (Railway, Heroku, Cloudflare).
+        transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+
+    mcp = FastMCP("brightbean", transport_security=transport_security)
 
     @mcp.tool()
     def whoami() -> dict[str, Any]:
