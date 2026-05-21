@@ -10,9 +10,46 @@ only the `mcp_serve` management command needs it at runtime.
 
 from __future__ import annotations
 
+import asyncio
+import functools
+import inspect
 from typing import Any
 
+from asgiref.sync import sync_to_async
+
 from .context import AuthContext, MCPAuthError, MCPWorkspaceError
+
+
+def _install_sync_to_async_shim(mcp) -> None:
+    """Wrap sync `@mcp.tool()` registrations so they're safe to call from FastMCP's event loop.
+
+    FastMCP awaits sync tool functions directly on the running loop, which trips
+    Django's `SynchronousOnlyOperation` the moment a tool touches the ORM. We
+    replace `mcp.tool` with a decorator that funnels sync handlers through
+    `sync_to_async`, letting the existing sync tool bodies remain unchanged.
+    Async handlers are passed through untouched.
+    """
+    original_tool = mcp.tool
+
+    def tool(*dargs, **dkwargs):
+        original_decorator = original_tool(*dargs, **dkwargs)
+
+        def decorator(fn):
+            if asyncio.iscoroutinefunction(fn):
+                return original_decorator(fn)
+
+            run_in_thread = sync_to_async(fn, thread_sensitive=True)
+
+            @functools.wraps(fn)
+            async def async_wrapper(*args, **kwargs):
+                return await run_in_thread(*args, **kwargs)
+
+            async_wrapper.__signature__ = inspect.signature(fn)
+            return original_decorator(async_wrapper)
+
+        return decorator
+
+    mcp.tool = tool
 
 
 def _workspace_summary(ws) -> dict[str, Any]:
@@ -48,6 +85,7 @@ def build_server(ctx: AuthContext):
         transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
 
     mcp = FastMCP("brightbean", transport_security=transport_security)
+    _install_sync_to_async_shim(mcp)
 
     @mcp.tool()
     def whoami() -> dict[str, Any]:
