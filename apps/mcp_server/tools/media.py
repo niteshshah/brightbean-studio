@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 import httpx
 from django.core.files.uploadedfile import SimpleUploadedFile
 
+from apps.mcp_server import upload_sessions
 from apps.media_library.models import MediaAsset, MediaFolder
 from apps.media_library.services import (
     ProtectedAssetError,
@@ -121,7 +122,13 @@ def register(mcp, ctx):
         mime_type: str = "",
         folder_id: str | None = None,
     ) -> dict[str, Any]:
-        """Upload an asset given its base64-encoded bytes."""
+        """Upload an asset given its base64-encoded bytes.
+
+        Suitable for small files only (rule of thumb: under ~200 KB raw / ~270 KB
+        base64). For anything larger, use the chunked flow — begin_media_upload,
+        append_media_upload_chunk, finish_media_upload — to avoid tool-call
+        size limits.
+        """
         ctx.require_permission("upload_media")
         ws = ctx.require_workspace()
         try:
@@ -140,6 +147,69 @@ def register(mcp, ctx):
             folder=folder,
         )
         return _serialize(asset)
+
+    @mcp.tool()
+    def begin_media_upload(
+        filename: str,
+        mime_type: str = "",
+        total_size: int | None = None,
+        folder_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Start a chunked upload session for a media file.
+
+        Use this when the file is too large to send through a single
+        upload_media_from_base64 call (rule of thumb: anything over ~200 KB raw).
+        Returns ``session_id`` plus ``max_chunk_bytes`` (the largest raw chunk
+        you may send per append_media_upload_chunk call). Pass ``total_size``
+        when known so oversize uploads fail before any chunks are sent.
+        """
+        ctx.require_permission("upload_media")
+        ws = ctx.require_workspace()
+        return upload_sessions.begin(
+            workspace=ws,
+            user=ctx.user,
+            filename=filename,
+            mime_type=mime_type,
+            total_size=total_size,
+            folder_id=folder_id,
+        )
+
+    @mcp.tool()
+    def append_media_upload_chunk(
+        session_id: str,
+        content_b64: str,
+        sequence: int,
+    ) -> dict[str, Any]:
+        """Append one base64-encoded chunk to an in-progress upload session.
+
+        ``sequence`` starts at 0 and must increment by 1 per call — out-of-order
+        chunks are rejected. Each chunk's raw (decoded) size must not exceed
+        the ``max_chunk_bytes`` returned by begin_media_upload.
+        """
+        ctx.require_permission("upload_media")
+        ws = ctx.require_workspace()
+        return upload_sessions.append(
+            workspace=ws,
+            user=ctx.user,
+            session_id=session_id,
+            content_b64=content_b64,
+            sequence=sequence,
+        )
+
+    @mcp.tool()
+    def finish_media_upload(session_id: str) -> dict[str, Any]:
+        """Finalize an upload session and create the media asset."""
+        ctx.require_permission("upload_media")
+        ws = ctx.require_workspace()
+        asset = upload_sessions.finish(workspace=ws, user=ctx.user, session_id=session_id)
+        return _serialize(asset)
+
+    @mcp.tool()
+    def cancel_media_upload(session_id: str) -> dict[str, Any]:
+        """Abandon an in-progress upload session and free its buffered bytes."""
+        ws = ctx.require_workspace()
+        cleared = upload_sessions.cancel(workspace=ws, user=ctx.user, session_id=session_id)
+        return {"session_id": session_id, "cancelled": cleared}
 
     @mcp.tool()
     def delete_media(asset_id: str) -> dict[str, Any]:
