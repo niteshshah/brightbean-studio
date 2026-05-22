@@ -37,5 +37,7 @@ urlpatterns = [
     path("", include("apps.accounts.urls_root")),
 ]
 
-if settings.DEBUG:
+# Serve user-uploaded media through Django when using local filesystem storage.
+# With STORAGE_BACKEND=s3, media URLs point at S3 directly so no routing is needed.
+if settings.STORAGE_BACKEND.lower() != "s3":
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
