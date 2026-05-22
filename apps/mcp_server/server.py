@@ -84,7 +84,12 @@ def build_server(ctx: AuthContext):
         # behind a proxy that validates Host itself (Railway, Heroku, Cloudflare).
         transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
 
-    mcp = FastMCP("brightbean", transport_security=transport_security)
+    mcp = FastMCP(
+        "brightbean",
+        transport_security=transport_security,
+        stateless_http=True,
+        json_response=True,
+    )
     _install_sync_to_async_shim(mcp)
 
     @mcp.tool()
